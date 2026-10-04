@@ -40,7 +40,7 @@ declare v_entry uuid; v_debit numeric(18,2); v_credit numeric(18,2); v_status te
 begin
  if not public.is_accounting_member(p_company) then raise exception 'Empresa não autorizada'; end if;
  select status into v_status from public.fiscal_periods where company_id=p_company and p_entry_date between starts_on and ends_on limit 1;
- if coalesce(v_status,'open') <> 'open' then raise exception 'Período contabilístico fechado ou bloqueado'; end if;
+ if v_status is null then raise exception 'Período contabilístico não configurado'; end if;\n  if v_status <> 'open' then raise exception 'Período contabilístico fechado ou bloqueado'; end if;
  if jsonb_array_length(p_lines)<2 then raise exception 'O lançamento deve possuir pelo menos duas linhas'; end if;
  select coalesce(sum((x->>'debit')::numeric),0),coalesce(sum((x->>'credit')::numeric),0) into v_debit,v_credit from jsonb_array_elements(p_lines) x;
  if v_debit<=0 or round(v_debit,2)<>round(v_credit,2) then raise exception 'Lançamento não balanceado'; end if;
@@ -58,3 +58,37 @@ drop trigger if exists trg_prevent_posted_entry_update on public.journal_entries
 create trigger trg_prevent_posted_entry_update before update or delete on public.journal_entries for each row execute function public.prevent_posted_journal_mutation();
 
 create or replace view public.account_balances with (security_invoker=true) as select e.company_id,l.account_id,a.code,a.name,sum(l.debit-l.credit) as balance from public.journal_entries e join public.journal_lines l on l.journal_entry_id=e.id join public.chart_of_accounts a on a.id=l.account_id where e.status='posted' group by e.company_id,l.account_id,a.code,a.name;
+
+
+create or replace function public.prevent_posted_line_mutation() returns trigger
+language plpgsql security invoker set search_path=public
+as $$
+begin
+  if exists(select 1 from public.journal_entries e where e.id=coalesce(old.journal_entry_id,new.journal_entry_id) and e.status='posted') then
+    raise exception 'Linhas de lançamentos publicados são imutáveis; use estorno';
+  end if;
+  return coalesce(new,old);
+end $$;
+
+drop trigger if exists trg_prevent_posted_line_update on public.journal_lines;
+create trigger trg_prevent_posted_line_update before update or delete on public.journal_lines
+for each row execute function public.prevent_posted_line_mutation();
+
+create or replace view public.trial_balance with (security_invoker=true) as
+select e.company_id,a.id account_id,a.code,a.name,
+       sum(l.debit) debit,sum(l.credit) credit,
+       sum(l.debit-l.credit) balance
+from public.journal_entries e
+join public.journal_lines l on l.journal_entry_id=e.id
+join public.chart_of_accounts a on a.id=l.account_id
+where e.status='posted'
+group by e.company_id,a.id,a.code,a.name;
+
+create or replace view public.profit_and_loss with (security_invoker=true) as
+select e.company_id,a.id account_id,a.code,a.name,a.account_type,
+       sum(l.credit-l.debit) amount
+from public.journal_entries e
+join public.journal_lines l on l.journal_entry_id=e.id
+join public.chart_of_accounts a on a.id=l.account_id
+where e.status='posted' and a.account_type in ('revenue','expense','tax')
+group by e.company_id,a.id,a.code,a.name,a.account_type;
