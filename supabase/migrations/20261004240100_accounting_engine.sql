@@ -14,7 +14,6 @@ create index if not exists idx_journal_lines_entry on public.journal_lines(journ
 -- Double-entry posting engine, immutable published entries, fiscal-period control and tenant isolation are added in the next migration.
 
 alter table public.accounting_companies enable row level security;
-alter table public.accounting_company_members enable row level security;
 alter table public.fiscal_periods enable row level security;
 alter table public.chart_of_accounts enable row level security;
 alter table public.tax_rules enable row level security;
@@ -23,6 +22,7 @@ alter table public.journal_entries enable row level security;
 alter table public.journal_lines enable row level security;
 
 create table if not exists public.accounting_company_members (company_id uuid not null references public.accounting_companies(id) on delete cascade,user_id uuid not null references auth.users(id) on delete cascade,role text not null default 'accountant' check(role in ('owner','admin','accountant','reviewer','viewer')),created_at timestamptz not null default now(),primary key(company_id,user_id));
+alter table public.accounting_company_members enable row level security;
 
 create or replace function public.is_accounting_member(p_company uuid) returns boolean language sql stable security invoker set search_path=public as $$ select exists(select 1 from public.accounting_company_members m where m.company_id=p_company and m.user_id=auth.uid()); $$;
 
